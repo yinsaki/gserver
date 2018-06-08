@@ -29,11 +29,6 @@ const (
 )
 
 type LogLevel int
-/*
-@Time : 2018/6/5 10:21
-@Author : yinsaki
-@File : fileutil
-*/
 
 const (
 	INFO LogLevel = iota
@@ -77,16 +72,62 @@ var (
 	maxFileSize int64
 	maxFileCount int32
 	dailyCount int32
-	consoleAppender bool = true
+	consoleAppender bool = false
 	dailyRolling bool = true
 	fileRolling bool = false
 	logObj *logFile
 
-	consoleFormat string = "%s:%d %s %s"
+	consoleFormat string = "%s:%v %s %s"
 	logFormat string = "%s %s"
 )
 
-const DATEFORMAT = "2018-06-05"
+//其中layout的时间必须是"2006-01-02 15:04:05"这个时间，不管格式如何，时间点一定得是这个
+const DATEFORMAT = "2006-01-02"
+
+func SetRollingDaily(fileDir, fileName string) {
+	dailyRolling = true
+	fileRolling = false
+	nowTime := time.Now()
+	nowDate, _:= time.Parse(DATEFORMAT, nowTime.Format(DATEFORMAT))
+	logObj = & logFile{dir:fileDir, filename:fileName,_date:&nowDate, isCover: false, mu:new(sync.RWMutex)}
+	logObj.mu.Lock()
+	defer  logObj.mu.Unlock()
+
+	if !logObj.isMustRename() {
+		logObj.logFile, _ = os.OpenFile(fileDir+"/"+fileName,os.O_RDWR|os.O_APPEND|os.O_CREATE, 0)
+		logObj.lg = log.New(logObj.logFile, "",log.Ldate|log.Ltime|log.Lshortfile)
+	}else {
+		logObj.rename()
+	}
+}
+
+func SetRollingFile(fileDir, fileName string, maxNumber int32, maxSize int64, _unit UNIT) {
+	maxFileSize = maxSize
+	maxFileCount = maxNumber
+	fileRolling = true
+	dailyRolling = false
+
+	logObj = & logFile{dir:fileDir, filename:fileName, isCover: false, mu:new(sync.RWMutex)}
+	logObj.mu.Lock()
+	defer  logObj.mu.Unlock()
+
+	for i:= 1; i <= int(maxNumber); i++ {
+		if system.IsFileExit(fileDir + "/" + fileName + "." + strconv.Itoa(i)) {
+			logObj._suffix = i
+		}else {
+			break
+		}
+	}
+
+	if !logObj.isMustRename() {
+		logObj.logFile, _ = os.OpenFile(fileDir+"/"+fileName, os.O_RDWR|os.O_APPEND|os.O_CREATE, 0)
+		logObj.lg = log.New(logObj.logFile, "\n", log.Ldate|log.Ltime|log.Lshortfile)
+	} else {
+		logObj.rename()
+	}
+
+	go fileMonitor()
+}
 
 func (this *logFile) isMustRename() bool {
 	if dailyRolling {
@@ -94,12 +135,11 @@ func (this *logFile) isMustRename() bool {
 		if t.After(*this._date) {
 			return true
 		}
+	}else{
+		if maxFileCount > 1 && system.GetFileSize(this.dir + "/" + this.filename) >= maxFileSize {
+			return true
+		}
 	}
-
-	if maxFileCount > 1 && system.GetFileSize(this.dir + "/" + this.filename) >= maxFileSize {
-		return true
-	}
-
 	return false
 }
 
@@ -110,18 +150,20 @@ func (this *logFile) rename() {
 		this.fileRollRename()
 	}
 }
+
 func (this *logFile)dailyRollRename() {
 	if this.logFile != nil {
 		this.logFile.Close()
 	}
 
 	mainFileName := this.dir + "/" + this.filename
-	fileName := this.dir + "/" + this.filename + this._date.Format(DATEFORMAT)
+	fileName := this.dir + "/" + this.filename + "." + this._date.Format(DATEFORMAT)
 	err := os.Rename(mainFileName, fileName)
 	if err != nil {
-		this.lg.Println("file rename err", fileName, err.Error())
+		this.lg.Println("file rename err", err.Error())
 	}
-	tt, _ := time.Parse(DATEFORMAT, time.Now().Format(DATEFORMAT))
+	nowTime := time.Now()
+	tt, _ := time.Parse(DATEFORMAT, nowTime.Format(DATEFORMAT))
 	this._date = &tt
 	this.logFile, _ = os.Create(mainFileName)
 	this.lg = log.New(logObj.logFile, "\n", log.Ldate|log.Ltime|log.Lshortfile)
@@ -138,7 +180,7 @@ func (this *logFile)fileRollRename() {
 	}
 
 	mainFileName := this.dir + "/" + this.filename
-	fileName := this.dir + "/" + this.filename + strconv.Itoa(this._suffix)
+	fileName := this.dir + "/" + this.filename + "." + strconv.Itoa(this._suffix)
 	if system.IsFileExit(fileName) {
 		os.Remove(fileName)
 	}
@@ -204,9 +246,9 @@ func getTraceDirInfo(dir string) string {
 		}
 	}
 
-	split := strings.Split(dir, "/")
+	split := strings.SplitAfter(dir, "/")
 	if len(split) > 2 {
-		return split[0] + "/.../" + split[len(split) - 1]
+		return ".../" + split[len(split) - 2] + split[len(split) - 1] + "/"
 	} else {
 		return dir + "/"
 	}
@@ -242,10 +284,10 @@ func Trace(level LogLevel, format string, v ... interface{})bool {
 
 	msg := fmt.Sprintf(format, v)
 	logMsg := buildLogMessage(level, msg)
-	console(logMsg)
 
 	if level >= logLevel {
-		logObj.lg.Output(2, logMsg)
+		console(logMsg)
+		logObj.lg.Output(0, logMsg)
 	}
 
 	return true
